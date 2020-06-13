@@ -12,4 +12,8 @@ npm run dev
 
 And a development server will open running the project on Http://localhost:5000.
 
+This version doesn't save information. It is a testing platform for my full version 
+will be a part of ScriptPad (my larger project, but is similar to my https://github.com/raguay/NotePad 
+project done in the Mint language. ScriptPad is a larger, Svelte project that works similarly).
 
+If you want to contribute, just send a pull request. Thanks.
