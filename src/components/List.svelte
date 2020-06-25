@@ -13,20 +13,18 @@
     >+</span>
   </div>
   <div class='itemcontainer' 
-       use:dndzone={{items, flipDurationMs}} 
+       use:dndzone={{items}} 
        on:consider={handleSort}
        on:finalize={handleSort}>
     {#each items as item(item.id)}
-      <div animate:flip="{{duration: flipDurationMs}}">
-        <Item itemInfo={item} 
+      <Item itemInfo={item}
             styles={styles}
             user={user}
             on:deleteItem={deleteItem}
             on:newItemMsg={newItemMsg}
             on:newItemApp={newItemApp}
             on:appUpdate={appUpdate}
-        />
-      </div>
+      />
     {/each}
   </div>
 </div>

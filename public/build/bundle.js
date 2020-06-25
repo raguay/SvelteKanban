@@ -4,7 +4,6 @@ var app = (function () {
     'use strict';
 
     function noop() { }
-    const identity = x => x;
     function add_location(element, file, line, column, char) {
         element.__svelte_meta = {
             loc: { file, line, column, char }
@@ -27,41 +26,6 @@ var app = (function () {
     }
     function action_destroyer(action_result) {
         return action_result && is_function(action_result.destroy) ? action_result.destroy : noop;
-    }
-
-    const is_client = typeof window !== 'undefined';
-    let now = is_client
-        ? () => window.performance.now()
-        : () => Date.now();
-    let raf = is_client ? cb => requestAnimationFrame(cb) : noop;
-
-    const tasks = new Set();
-    function run_tasks(now) {
-        tasks.forEach(task => {
-            if (!task.c(now)) {
-                tasks.delete(task);
-                task.f();
-            }
-        });
-        if (tasks.size !== 0)
-            raf(run_tasks);
-    }
-    /**
-     * Creates a new task that runs on each raf frame
-     * until it returns a falsy value or is aborted
-     */
-    function loop(callback) {
-        let task;
-        if (tasks.size === 0)
-            raf(run_tasks);
-        return {
-            promise: new Promise(fulfill => {
-                tasks.add(task = { c: callback, f: fulfill });
-            }),
-            abort() {
-                tasks.delete(task);
-            }
-        };
     }
 
     function append(target, node) {
@@ -105,9 +69,7 @@ var app = (function () {
         return Array.from(element.childNodes);
     }
     function set_input_value(input, value) {
-        if (value != null || input.value) {
-            input.value = value;
-        }
+        input.value = value == null ? '' : value;
     }
     function set_style(node, key, value, important) {
         node.style.setProperty(key, value, important ? 'important' : '');
@@ -116,136 +78,6 @@ var app = (function () {
         const e = document.createEvent('CustomEvent');
         e.initCustomEvent(type, false, false, detail);
         return e;
-    }
-
-    const active_docs = new Set();
-    let active = 0;
-    // https://github.com/darkskyapp/string-hash/blob/master/index.js
-    function hash(str) {
-        let hash = 5381;
-        let i = str.length;
-        while (i--)
-            hash = ((hash << 5) - hash) ^ str.charCodeAt(i);
-        return hash >>> 0;
-    }
-    function create_rule(node, a, b, duration, delay, ease, fn, uid = 0) {
-        const step = 16.666 / duration;
-        let keyframes = '{\n';
-        for (let p = 0; p <= 1; p += step) {
-            const t = a + (b - a) * ease(p);
-            keyframes += p * 100 + `%{${fn(t, 1 - t)}}\n`;
-        }
-        const rule = keyframes + `100% {${fn(b, 1 - b)}}\n}`;
-        const name = `__svelte_${hash(rule)}_${uid}`;
-        const doc = node.ownerDocument;
-        active_docs.add(doc);
-        const stylesheet = doc.__svelte_stylesheet || (doc.__svelte_stylesheet = doc.head.appendChild(element('style')).sheet);
-        const current_rules = doc.__svelte_rules || (doc.__svelte_rules = {});
-        if (!current_rules[name]) {
-            current_rules[name] = true;
-            stylesheet.insertRule(`@keyframes ${name} ${rule}`, stylesheet.cssRules.length);
-        }
-        const animation = node.style.animation || '';
-        node.style.animation = `${animation ? `${animation}, ` : ``}${name} ${duration}ms linear ${delay}ms 1 both`;
-        active += 1;
-        return name;
-    }
-    function delete_rule(node, name) {
-        const previous = (node.style.animation || '').split(', ');
-        const next = previous.filter(name
-            ? anim => anim.indexOf(name) < 0 // remove specific animation
-            : anim => anim.indexOf('__svelte') === -1 // remove all Svelte animations
-        );
-        const deleted = previous.length - next.length;
-        if (deleted) {
-            node.style.animation = next.join(', ');
-            active -= deleted;
-            if (!active)
-                clear_rules();
-        }
-    }
-    function clear_rules() {
-        raf(() => {
-            if (active)
-                return;
-            active_docs.forEach(doc => {
-                const stylesheet = doc.__svelte_stylesheet;
-                let i = stylesheet.cssRules.length;
-                while (i--)
-                    stylesheet.deleteRule(i);
-                doc.__svelte_rules = {};
-            });
-            active_docs.clear();
-        });
-    }
-
-    function create_animation(node, from, fn, params) {
-        if (!from)
-            return noop;
-        const to = node.getBoundingClientRect();
-        if (from.left === to.left && from.right === to.right && from.top === to.top && from.bottom === to.bottom)
-            return noop;
-        const { delay = 0, duration = 300, easing = identity, 
-        // @ts-ignore todo: should this be separated from destructuring? Or start/end added to public api and documentation?
-        start: start_time = now() + delay, 
-        // @ts-ignore todo:
-        end = start_time + duration, tick = noop, css } = fn(node, { from, to }, params);
-        let running = true;
-        let started = false;
-        let name;
-        function start() {
-            if (css) {
-                name = create_rule(node, 0, 1, duration, delay, easing, css);
-            }
-            if (!delay) {
-                started = true;
-            }
-        }
-        function stop() {
-            if (css)
-                delete_rule(node, name);
-            running = false;
-        }
-        loop(now => {
-            if (!started && now >= start_time) {
-                started = true;
-            }
-            if (started && now >= end) {
-                tick(1, 0);
-                stop();
-            }
-            if (!running) {
-                return false;
-            }
-            if (started) {
-                const p = now - start_time;
-                const t = 0 + 1 * easing(p / duration);
-                tick(t, 1 - t);
-            }
-            return true;
-        });
-        start();
-        tick(0, 1);
-        return stop;
-    }
-    function fix_position(node) {
-        const style = getComputedStyle(node);
-        if (style.position !== 'absolute' && style.position !== 'fixed') {
-            const { width, height } = style;
-            const a = node.getBoundingClientRect();
-            node.style.position = 'absolute';
-            node.style.width = width;
-            node.style.height = height;
-            add_transform(node, a);
-        }
-    }
-    function add_transform(node, a) {
-        const b = node.getBoundingClientRect();
-        if (a.left !== b.left || a.top !== b.top) {
-            const style = getComputedStyle(node);
-            const transform = style.transform === 'none' ? '' : style.transform;
-            node.style.transform = `${transform} translate(${a.left - b.left}px, ${a.top - b.top}px)`;
-        }
     }
 
     let current_component;
@@ -386,10 +218,6 @@ var app = (function () {
             lookup.delete(block.key);
         });
     }
-    function fix_and_outro_and_destroy_block(block, lookup) {
-        block.f();
-        outro_and_destroy_block(block, lookup);
-    }
     function update_keyed_each(old_blocks, dirty, get_key, dynamic, ctx, list, lookup, node, destroy, create_each_block, next, get_context) {
         let o = old_blocks.length;
         let n = list.length;
@@ -420,7 +248,7 @@ var app = (function () {
         const did_move = new Set();
         function insert(block) {
             transition_in(block, 1);
-            block.m(node, next, lookup.has(block.key));
+            block.m(node, next);
             lookup.set(block.key, block);
             next = block.first;
             n--;
@@ -593,7 +421,7 @@ var app = (function () {
     }
 
     function dispatch_dev(type, detail) {
-        document.dispatchEvent(custom_event(type, Object.assign({ version: '3.22.2' }, detail)));
+        document.dispatchEvent(custom_event(type, Object.assign({ version: '3.23.2' }, detail)));
     }
     function append_dev(target, node) {
         dispatch_dev("SvelteDOMInsert", { target, node });
@@ -821,7 +649,7 @@ var app = (function () {
         if (!isCenterOfAInsideB(floatingAboveEl, collectionBelowEl)) {
             return null;
         }
-        const children = collectionBelowEl.childNodes;
+        const children = collectionBelowEl.children;
         // the container is empty, floating element should be the first 
         if (children.length === 0) {
             return {index: 0, isProximityBased: true};
@@ -1066,11 +894,11 @@ var app = (function () {
     const {scrollIfNeeded: scrollIfNeeded$1, resetScrolling: resetScrolling$1} = makeScroller();
     let next$1;
 
-    function loop$1() {
+    function loop() {
         if (mousePosition) {
             scrollIfNeeded$1(mousePosition, document.documentElement);
         }
-        next$1 = window.setTimeout(loop$1, INTERVAL_MS$1);
+        next$1 = window.setTimeout(loop, INTERVAL_MS$1);
     }
 
     /**
@@ -1079,7 +907,7 @@ var app = (function () {
     function armWindowScroller() {
         console.debug('arming window scroller');
         window.addEventListener('mousemove', updateMousePosition);
-        loop$1();
+        loop();
     }
 
     /**
@@ -1171,12 +999,13 @@ var app = (function () {
     /**
      * makes the element compatible with being draggable
      * @param {HTMLElement} draggableEl
+     * @param {boolean} dragDisabled
      */
-    function styleDraggable(draggableEl) {
+    function styleDraggable(draggableEl, dragDisabled) {
         draggableEl.draggable = false;
         draggableEl.ondragstart = () => false;
         draggableEl.style.userSelect = 'none';
-        draggableEl.style.cursor = 'grab';
+        draggableEl.style.cursor = dragDisabled? '': 'grab';
     }
 
     /**
@@ -1274,19 +1103,27 @@ var app = (function () {
     /* custom drag-events handlers */
     function handleDraggedEntered(e) {
         console.debug('dragged entered', e.currentTarget, e.detail);
-        let {items} = dzToConfig.get(e.currentTarget);
+        let {items, dropFromOthersDisabled} = dzToConfig.get(e.currentTarget);
+        if (dropFromOthersDisabled && e.currentTarget !== originDropZone) {
+            console.debug('drop is currently disabled');
+            return;
+        }
         // this deals with another svelte related race condition. in rare occasions (super rapid operations) the list hasn't updated yet
         items = items.filter(i => i.id !== shadowElData.id);
         console.debug(`dragged entered items ${JSON.stringify(items)}`);
         const {index, isProximityBased} = e.detail.indexObj;
-        shadowElIdx = (isProximityBased && index === e.currentTarget.childNodes.length - 1)? index + 1 : index;
+        shadowElIdx = (isProximityBased && index === e.currentTarget.children.length - 1)? index + 1 : index;
         shadowElDropZone = e.currentTarget;
         items.splice( shadowElIdx, 0, shadowElData);
         dispatchConsiderEvent(e.currentTarget, items);
     }
     function handleDraggedLeft(e) {
         console.debug('dragged left', e.currentTarget, e.detail);
-        const {items} = dzToConfig.get(e.currentTarget);
+        const {items, dropFromOthersDisabled} = dzToConfig.get(e.currentTarget);
+        if (dropFromOthersDisabled && e.currentTarget !== originDropZone) {
+            console.debug('drop is currently disabled');
+            return;
+        }
         items.splice(shadowElIdx, 1);
         shadowElIdx = undefined;
         shadowElDropZone = undefined;
@@ -1294,7 +1131,11 @@ var app = (function () {
     }
     function handleDraggedIsOverIndex(e) {
         console.debug('dragged is over index', e.currentTarget, e.detail);
-        const {items} = dzToConfig.get(e.currentTarget);
+        const {items, dropFromOthersDisabled} = dzToConfig.get(e.currentTarget);
+        if (dropFromOthersDisabled && e.currentTarget !== originDropZone) {
+            console.debug('drop is currently disabled');
+            return;
+        }
         const {index} = e.detail.indexObj;
         items.splice(shadowElIdx, 1);
         items.splice( index, 0, shadowElData);
@@ -1326,7 +1167,11 @@ var app = (function () {
             items = items.map(item => item.hasOwnProperty('isDndShadowItem')? draggedElData : item);
             function finalizeWithinZone() {
                 dispatchFinalizeEvent(shadowElDropZone, items);
-                shadowElDropZone.childNodes[shadowElIdx].style.visibility = '';
+                if (shadowElDropZone !== originDropZone) {
+                    // letting the origin drop zone know the element was permanently taken away
+                    dispatchFinalizeEvent(originDropZone, dzToConfig.get(originDropZone).items);
+                }
+                shadowElDropZone.children[shadowElIdx].style.visibility = '';
                 cleanupPostDrop();
                 isWorkingOnPreviousDrag = false;
             }
@@ -1343,7 +1188,7 @@ var app = (function () {
             function finalizeBackToOrigin() {
                 items.splice(originIndex, 1, draggedElData);
                 dispatchFinalizeEvent(originDropZone, items);
-                shadowElDropZone.childNodes[shadowElIdx].style.visibility = '';
+                shadowElDropZone.children[shadowElIdx].style.visibility = '';
                 cleanupPostDrop();
                 isWorkingOnPreviousDrag = false;
             }
@@ -1353,7 +1198,7 @@ var app = (function () {
 
     // helper function for handleDrop
     function animateDraggedToFinalPosition(callback) {
-        const shadowElRect = shadowElDropZone.childNodes[shadowElIdx].getBoundingClientRect();
+        const shadowElRect = shadowElDropZone.children[shadowElIdx].getBoundingClientRect();
         const newTransform = {
             x: shadowElRect.left - parseFloat(draggedEl.style.left),
             y: shadowElRect.top - parseFloat(draggedEl.style.top)
@@ -1393,7 +1238,7 @@ var app = (function () {
      * @return {{update: function, destroy: function}}
      */
     function dndzone(node, options) {
-        const config =  {items: [], type: undefined};
+        const config =  {items: [], type: undefined, flipDurationMs: 0, dragDisabled: false, dropFromOthersDisabled: false};
         console.debug("dndzone good to go", {node, options, config});
         let elToIdx = new Map();
         // used before the actual drag starts
@@ -1456,7 +1301,10 @@ var app = (function () {
             // creating the draggable element
             draggedEl = createDraggedElementFrom(dragTarget);
             document.body.appendChild(draggedEl);
-            styleActiveDropZones(typeToDropZones.get(config.type));
+            styleActiveDropZones(
+                Array.from(typeToDropZones.get(config.type))
+                .filter(dz => dz === originDropZone || !dzToConfig.get(dz).dropFromOthersDisabled)
+            );
 
             // removing the original element by removing its data entry
             items.splice( currentIdx, 1);
@@ -1470,27 +1318,41 @@ var app = (function () {
             watchDraggedElement();
         }
 
-        function configure(opts) {
-            console.debug(`configuring ${JSON.stringify(opts)}`);
-            config.dropAnimationDurationMs = opts.flipDurationMs || 0;
-            const newType  = opts.type|| DEFAULT_DROP_ZONE_TYPE;
+        function configure({items = [], flipDurationMs:dropAnimationDurationMs = 0, type:newType = DEFAULT_DROP_ZONE_TYPE, dragDisabled = false, dropFromOthersDisabled = false, ...rest }) {
+            if (Object.keys(rest).length > 0) {
+                console.warn(`dndzone will ignore unknown options`, rest);
+            }
+            config.dropAnimationDurationMs = dropAnimationDurationMs;
             if (config.type && newType !== config.type) {
                 unregisterDropZone(node, config.type);
             }
             config.type = newType;
             registerDropZone(node, newType);
 
-            config.items = opts.items || []; 
+            config.items = items;
+
+            config.dragDisabled = dragDisabled;
+
+            if (isWorkingOnPreviousDrag && config.dropFromOthersDisabled !== dropFromOthersDisabled) {
+                if (dropFromOthersDisabled) {
+                    styleInActiveDropZones([node]);
+                } else {
+                    styleActiveDropZones([node]);
+                }
+            }
+            config.dropFromOthersDisabled = dropFromOthersDisabled;
             dzToConfig.set(node, config);
-            for (let idx=0; idx< node.childNodes.length; idx++) {
-                const draggableEl = node.childNodes[idx];
-                styleDraggable(draggableEl);
+            for (let idx = 0; idx < node.children.length; idx++) {
+                const draggableEl = node.children[idx];
+                styleDraggable(draggableEl, dragDisabled);
                 if (config.items[idx].hasOwnProperty('isDndShadowItem')) {
                     morphDraggedElementToBeLike(draggedEl, draggableEl, currentMousePosition.x, currentMousePosition.y);
                     styleShadowEl(draggableEl);
                     continue;
                 }
-                if (!elToIdx.has(draggableEl)) {
+                draggableEl.removeEventListener('mousedown', handleMouseDown);
+                draggableEl.removeEventListener('touchstart', handleMouseDown);
+                if (!dragDisabled) {
                     draggableEl.addEventListener('mousedown', handleMouseDown);
                     draggableEl.addEventListener('touchstart', handleMouseDown);
                 }
@@ -1513,13 +1375,14 @@ var app = (function () {
         });
     }
 
-    /* src/components/EditH2Field.svelte generated by Svelte v3.22.2 */
+    /* src/components/EditH2Field.svelte generated by Svelte v3.23.2 */
     const file = "src/components/EditH2Field.svelte";
 
     // (10:4) {:else}
     function create_else_block(ctx) {
     	let h2;
     	let t;
+    	let mounted;
     	let dispose;
 
     	const block = {
@@ -1528,17 +1391,21 @@ var app = (function () {
     			t = text(/*name*/ ctx[0]);
     			add_location(h2, file, 10, 6, 302);
     		},
-    		m: function mount(target, anchor, remount) {
+    		m: function mount(target, anchor) {
     			insert_dev(target, h2, anchor);
     			append_dev(h2, t);
-    			if (remount) dispose();
-    			dispose = listen_dev(h2, "dblclick", /*dblclick_handler*/ ctx[11], false, false, false);
+
+    			if (!mounted) {
+    				dispose = listen_dev(h2, "dblclick", /*dblclick_handler*/ ctx[10], false, false, false);
+    				mounted = true;
+    			}
     		},
     		p: function update(ctx, dirty) {
     			if (dirty & /*name*/ 1) set_data_dev(t, /*name*/ ctx[0]);
     		},
     		d: function destroy(detaching) {
     			if (detaching) detach_dev(h2);
+    			mounted = false;
     			dispose();
     		}
     	};
@@ -1557,6 +1424,7 @@ var app = (function () {
     // (2:2) {#if editH2Flag}
     function create_if_block(ctx) {
     	let input;
+    	let mounted;
     	let dispose;
 
     	const block = {
@@ -1566,17 +1434,20 @@ var app = (function () {
     			attr_dev(input, "type", "text");
     			add_location(input, file, 2, 4, 49);
     		},
-    		m: function mount(target, anchor, remount) {
+    		m: function mount(target, anchor) {
     			insert_dev(target, input, anchor);
     			set_input_value(input, /*name*/ ctx[0]);
-    			/*input_binding*/ ctx[8](input);
-    			if (remount) run_all(dispose);
+    			/*input_binding*/ ctx[7](input);
 
-    			dispose = [
-    				listen_dev(input, "input", /*input_input_handler*/ ctx[7]),
-    				listen_dev(input, "keydown", /*keydown_handler*/ ctx[9], false, false, false),
-    				listen_dev(input, "blur", /*blur_handler*/ ctx[10], false, false, false)
-    			];
+    			if (!mounted) {
+    				dispose = [
+    					listen_dev(input, "input", /*input_input_handler*/ ctx[6]),
+    					listen_dev(input, "keydown", /*keydown_handler*/ ctx[8], false, false, false),
+    					listen_dev(input, "blur", /*blur_handler*/ ctx[9], false, false, false)
+    				];
+
+    				mounted = true;
+    			}
     		},
     		p: function update(ctx, dirty) {
     			if (dirty & /*name*/ 1 && input.value !== /*name*/ ctx[0]) {
@@ -1585,7 +1456,8 @@ var app = (function () {
     		},
     		d: function destroy(detaching) {
     			if (detaching) detach_dev(input);
-    			/*input_binding*/ ctx[8](null);
+    			/*input_binding*/ ctx[7](null);
+    			mounted = false;
     			run_all(dispose);
     		}
     	};
@@ -1692,7 +1564,8 @@ var app = (function () {
 
     	function input_binding($$value) {
     		binding_callbacks[$$value ? "unshift" : "push"](() => {
-    			$$invalidate(1, editField = $$value);
+    			editField = $$value;
+    			$$invalidate(1, editField);
     		});
     	}
 
@@ -1743,7 +1616,6 @@ var app = (function () {
     		editName,
     		nameChanged,
     		styles,
-    		disbatch,
     		input_input_handler,
     		input_binding,
     		keydown_handler,
@@ -1793,13 +1665,14 @@ var app = (function () {
     	}
     }
 
-    /* src/components/EditPField.svelte generated by Svelte v3.22.2 */
+    /* src/components/EditPField.svelte generated by Svelte v3.23.2 */
     const file$1 = "src/components/EditPField.svelte";
 
     // (9:4) {:else}
     function create_else_block$1(ctx) {
     	let p;
     	let t;
+    	let mounted;
     	let dispose;
 
     	const block = {
@@ -1809,17 +1682,21 @@ var app = (function () {
     			attr_dev(p, "class", "pListName svelte-kmol7a");
     			add_location(p, file$1, 9, 6, 282);
     		},
-    		m: function mount(target, anchor, remount) {
+    		m: function mount(target, anchor) {
     			insert_dev(target, p, anchor);
     			append_dev(p, t);
-    			if (remount) dispose();
-    			dispose = listen_dev(p, "dblclick", /*dblclick_handler*/ ctx[11], false, false, false);
+
+    			if (!mounted) {
+    				dispose = listen_dev(p, "dblclick", /*dblclick_handler*/ ctx[10], false, false, false);
+    				mounted = true;
+    			}
     		},
     		p: function update(ctx, dirty) {
     			if (dirty & /*name*/ 1) set_data_dev(t, /*name*/ ctx[0]);
     		},
     		d: function destroy(detaching) {
     			if (detaching) detach_dev(p);
+    			mounted = false;
     			dispose();
     		}
     	};
@@ -1838,6 +1715,7 @@ var app = (function () {
     // (2:2) {#if editH2Flag}
     function create_if_block$1(ctx) {
     	let textarea;
+    	let mounted;
     	let dispose;
 
     	const block = {
@@ -1846,17 +1724,20 @@ var app = (function () {
     			attr_dev(textarea, "class", "eListName svelte-kmol7a");
     			add_location(textarea, file$1, 2, 4, 49);
     		},
-    		m: function mount(target, anchor, remount) {
+    		m: function mount(target, anchor) {
     			insert_dev(target, textarea, anchor);
     			set_input_value(textarea, /*name*/ ctx[0]);
-    			/*textarea_binding*/ ctx[8](textarea);
-    			if (remount) run_all(dispose);
+    			/*textarea_binding*/ ctx[7](textarea);
 
-    			dispose = [
-    				listen_dev(textarea, "input", /*textarea_input_handler*/ ctx[7]),
-    				listen_dev(textarea, "keydown", /*keydown_handler*/ ctx[9], false, false, false),
-    				listen_dev(textarea, "blur", /*blur_handler*/ ctx[10], false, false, false)
-    			];
+    			if (!mounted) {
+    				dispose = [
+    					listen_dev(textarea, "input", /*textarea_input_handler*/ ctx[6]),
+    					listen_dev(textarea, "keydown", /*keydown_handler*/ ctx[8], false, false, false),
+    					listen_dev(textarea, "blur", /*blur_handler*/ ctx[9], false, false, false)
+    				];
+
+    				mounted = true;
+    			}
     		},
     		p: function update(ctx, dirty) {
     			if (dirty & /*name*/ 1) {
@@ -1865,7 +1746,8 @@ var app = (function () {
     		},
     		d: function destroy(detaching) {
     			if (detaching) detach_dev(textarea);
-    			/*textarea_binding*/ ctx[8](null);
+    			/*textarea_binding*/ ctx[7](null);
+    			mounted = false;
     			run_all(dispose);
     		}
     	};
@@ -1972,7 +1854,8 @@ var app = (function () {
 
     	function textarea_binding($$value) {
     		binding_callbacks[$$value ? "unshift" : "push"](() => {
-    			$$invalidate(1, editField = $$value);
+    			editField = $$value;
+    			$$invalidate(1, editField);
     		});
     	}
 
@@ -2023,7 +1906,6 @@ var app = (function () {
     		editName,
     		nameChanged,
     		styles,
-    		disbatch,
     		textarea_input_handler,
     		textarea_binding,
     		keydown_handler,
@@ -2073,18 +1955,22 @@ var app = (function () {
     	}
     }
 
-    /* src/components/ToDoListApp.svelte generated by Svelte v3.22.2 */
+    /* src/components/ToDoListApp.svelte generated by Svelte v3.23.2 */
     const file$2 = "src/components/ToDoListApp.svelte";
 
     function get_each_context(ctx, list, i) {
     	const child_ctx = ctx.slice();
     	child_ctx[13] = list[i];
+    	child_ctx[14] = list;
+    	child_ctx[15] = i;
     	return child_ctx;
     }
 
     function get_each_context_1(ctx, list, i) {
     	const child_ctx = ctx.slice();
     	child_ctx[13] = list[i];
+    	child_ctx[16] = list;
+    	child_ctx[17] = i;
     	return child_ctx;
     }
 
@@ -2094,10 +1980,11 @@ var app = (function () {
     	let t0;
     	let t1_value = /*todo*/ ctx[13].description + "";
     	let t1;
+    	let mounted;
     	let dispose;
 
     	function click_handler(...args) {
-    		return /*click_handler*/ ctx[11](/*todo*/ ctx[13], ...args);
+    		return /*click_handler*/ ctx[9](/*todo*/ ctx[13], /*each_value_1*/ ctx[16], /*todo_index_1*/ ctx[17], ...args);
     	}
 
     	const block = {
@@ -2107,12 +1994,15 @@ var app = (function () {
     			t1 = text(t1_value);
     			add_location(p, file$2, 15, 8, 358);
     		},
-    		m: function mount(target, anchor, remount) {
+    		m: function mount(target, anchor) {
     			insert_dev(target, p, anchor);
     			append_dev(p, t0);
     			append_dev(p, t1);
-    			if (remount) dispose();
-    			dispose = listen_dev(p, "click", click_handler, false, false, false);
+
+    			if (!mounted) {
+    				dispose = listen_dev(p, "click", click_handler, false, false, false);
+    				mounted = true;
+    			}
     		},
     		p: function update(new_ctx, dirty) {
     			ctx = new_ctx;
@@ -2120,6 +2010,7 @@ var app = (function () {
     		},
     		d: function destroy(detaching) {
     			if (detaching) detach_dev(p);
+    			mounted = false;
     			dispose();
     		}
     	};
@@ -2186,10 +2077,11 @@ var app = (function () {
     	let t0;
     	let t1_value = /*todo*/ ctx[13].description + "";
     	let t1;
+    	let mounted;
     	let dispose;
 
     	function click_handler_1(...args) {
-    		return /*click_handler_1*/ ctx[12](/*todo*/ ctx[13], ...args);
+    		return /*click_handler_1*/ ctx[10](/*todo*/ ctx[13], /*each_value*/ ctx[14], /*todo_index*/ ctx[15], ...args);
     	}
 
     	const block = {
@@ -2199,12 +2091,15 @@ var app = (function () {
     			t1 = text(t1_value);
     			add_location(p, file$2, 20, 8, 529);
     		},
-    		m: function mount(target, anchor, remount) {
+    		m: function mount(target, anchor) {
     			insert_dev(target, p, anchor);
     			append_dev(p, t0);
     			append_dev(p, t1);
-    			if (remount) dispose();
-    			dispose = listen_dev(p, "click", click_handler_1, false, false, false);
+
+    			if (!mounted) {
+    				dispose = listen_dev(p, "click", click_handler_1, false, false, false);
+    				mounted = true;
+    			}
     		},
     		p: function update(new_ctx, dirty) {
     			ctx = new_ctx;
@@ -2212,6 +2107,7 @@ var app = (function () {
     		},
     		d: function destroy(detaching) {
     			if (detaching) detach_dev(p);
+    			mounted = false;
     			dispose();
     		}
     	};
@@ -2274,15 +2170,17 @@ var app = (function () {
 
     function create_fragment$2(ctx) {
     	let div1;
+    	let edith2field;
     	let t0;
     	let input;
     	let t1;
     	let div0;
     	let t2;
     	let current;
+    	let mounted;
     	let dispose;
 
-    	const edith2field = new EditH2Field({
+    	edith2field = new EditH2Field({
     			props: {
     				name: /*app*/ ctx[0].name,
     				styles: /*app*/ ctx[0].styles
@@ -2337,7 +2235,7 @@ var app = (function () {
     		l: function claim(nodes) {
     			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
     		},
-    		m: function mount(target, anchor, remount) {
+    		m: function mount(target, anchor) {
     			insert_dev(target, div1, anchor);
     			mount_component(edith2field, div1, null);
     			append_dev(div1, t0);
@@ -2357,12 +2255,15 @@ var app = (function () {
     			}
 
     			current = true;
-    			if (remount) run_all(dispose);
 
-    			dispose = [
-    				listen_dev(input, "input", /*input_input_handler*/ ctx[9]),
-    				listen_dev(input, "keydown", /*keydown_handler*/ ctx[10], false, false, false)
-    			];
+    			if (!mounted) {
+    				dispose = [
+    					listen_dev(input, "input", /*input_input_handler*/ ctx[7]),
+    					listen_dev(input, "keydown", /*keydown_handler*/ ctx[8], false, false, false)
+    				];
+
+    				mounted = true;
+    			}
     		},
     		p: function update(ctx, [dirty]) {
     			const edith2field_changes = {};
@@ -2436,6 +2337,7 @@ var app = (function () {
     			destroy_component(edith2field);
     			destroy_each(each_blocks_1, detaching);
     			destroy_each(each_blocks, detaching);
+    			mounted = false;
     			run_all(dispose);
     		}
     	};
@@ -2505,13 +2407,13 @@ var app = (function () {
     		if (e.code === "Enter") createNewTodo();
     	};
 
-    	const click_handler = (todo, e) => {
-    		$$invalidate(0, todo.done = true, app);
+    	const click_handler = (todo, each_value_1, todo_index_1, e) => {
+    		$$invalidate(0, each_value_1[todo_index_1].done = true, app);
     		setDone(todo);
     	};
 
-    	const click_handler_1 = (todo, e) => {
-    		$$invalidate(0, todo.done = false, app);
+    	const click_handler_1 = (todo, each_value, todo_index, e) => {
+    		$$invalidate(0, each_value[todo_index].done = false, app);
     		setNotDone(todo);
     	};
 
@@ -2552,8 +2454,6 @@ var app = (function () {
     		setDone,
     		setNotDone,
     		item,
-    		disbatch,
-    		saveApp,
     		input_input_handler,
     		keydown_handler,
     		click_handler,
@@ -2602,7 +2502,7 @@ var app = (function () {
     	}
     }
 
-    /* src/components/Item.svelte generated by Svelte v3.22.2 */
+    /* src/components/Item.svelte generated by Svelte v3.23.2 */
     const file$3 = "src/components/Item.svelte";
 
     function get_each_context$1(ctx, list, i) {
@@ -2621,7 +2521,9 @@ var app = (function () {
     function create_if_block$3(ctx) {
     	let div4;
     	let div3;
+    	let edith2field;
     	let t0;
+    	let editpfield;
     	let t1;
     	let div2;
     	let t2;
@@ -2636,9 +2538,10 @@ var app = (function () {
     	let button2;
     	let t9;
     	let current;
+    	let mounted;
     	let dispose;
 
-    	const edith2field = new EditH2Field({
+    	edith2field = new EditH2Field({
     			props: {
     				name: /*itemInfo*/ ctx[0].name,
     				styles: /*styles*/ ctx[1]
@@ -2648,7 +2551,7 @@ var app = (function () {
 
     	edith2field.$on("nameChanged", /*nameChanged*/ ctx[7]);
 
-    	const editpfield = new EditPField({
+    	editpfield = new EditPField({
     			props: {
     				name: /*itemInfo*/ ctx[0].description,
     				styles: /*styles*/ ctx[1]
@@ -2722,7 +2625,7 @@ var app = (function () {
     			attr_dev(div4, "class", "editDialogBG svelte-1l8qizt");
     			add_location(div4, file$3, 6, 4, 210);
     		},
-    		m: function mount(target, anchor, remount) {
+    		m: function mount(target, anchor) {
     			insert_dev(target, div4, anchor);
     			append_dev(div4, div3);
     			mount_component(edith2field, div3, null);
@@ -2749,16 +2652,19 @@ var app = (function () {
     			append_dev(div2, t9);
     			if (if_block) if_block.m(div2, null);
     			current = true;
-    			if (remount) run_all(dispose);
 
-    			dispose = [
-    				listen_dev(input, "input", /*input_input_handler*/ ctx[16]),
-    				listen_dev(input, "keydown", /*keydown_handler*/ ctx[17], false, false, false),
-    				listen_dev(button0, "click", /*createToDoList*/ ctx[10], false, false, false),
-    				listen_dev(button1, "click", /*saveItem*/ ctx[6], false, false, false),
-    				listen_dev(button2, "click", /*deleteItem*/ ctx[5], false, false, false),
-    				listen_dev(div3, "save", /*saveItem*/ ctx[6], false, false, false)
-    			];
+    			if (!mounted) {
+    				dispose = [
+    					listen_dev(input, "input", /*input_input_handler*/ ctx[13]),
+    					listen_dev(input, "keydown", /*keydown_handler*/ ctx[14], false, false, false),
+    					listen_dev(button0, "click", /*createToDoList*/ ctx[10], false, false, false),
+    					listen_dev(button1, "click", /*saveItem*/ ctx[6], false, false, false),
+    					listen_dev(button2, "click", /*deleteItem*/ ctx[5], false, false, false),
+    					listen_dev(div3, "save", /*saveItem*/ ctx[6], false, false, false)
+    				];
+
+    				mounted = true;
+    			}
     		},
     		p: function update(ctx, dirty) {
     			const edith2field_changes = {};
@@ -2851,6 +2757,7 @@ var app = (function () {
     			destroy_component(editpfield);
     			destroy_each(each_blocks, detaching);
     			if (if_block) if_block.d();
+    			mounted = false;
     			run_all(dispose);
     		}
     	};
@@ -2868,6 +2775,7 @@ var app = (function () {
 
     // (23:10) {#each itemInfo.apps as app}
     function create_each_block_1$1(ctx) {
+    	let switch_instance;
     	let switch_instance_anchor;
     	let current;
     	var switch_value = /*app*/ ctx[21].code;
@@ -2883,7 +2791,7 @@ var app = (function () {
     	}
 
     	if (switch_value) {
-    		var switch_instance = new switch_value(switch_props(ctx));
+    		switch_instance = new switch_value(switch_props(ctx));
     		switch_instance.$on("appUpdate", /*appUpdate*/ ctx[11]);
     	}
 
@@ -3153,6 +3061,7 @@ var app = (function () {
     	let t2;
     	let t3;
     	let current;
+    	let mounted;
     	let dispose;
     	let if_block = /*edit*/ ctx[2] && create_if_block$3(ctx);
 
@@ -3177,7 +3086,7 @@ var app = (function () {
     		l: function claim(nodes) {
     			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
     		},
-    		m: function mount(target, anchor, remount) {
+    		m: function mount(target, anchor) {
     			insert_dev(target, div, anchor);
     			append_dev(div, h2);
     			append_dev(h2, t0);
@@ -3187,8 +3096,11 @@ var app = (function () {
     			append_dev(div, t3);
     			if (if_block) if_block.m(div, null);
     			current = true;
-    			if (remount) dispose();
-    			dispose = listen_dev(div, "dblclick", /*editItem*/ ctx[4], false, false, false);
+
+    			if (!mounted) {
+    				dispose = listen_dev(div, "dblclick", /*editItem*/ ctx[4], false, false, false);
+    				mounted = true;
+    			}
     		},
     		p: function update(ctx, [dirty]) {
     			if ((!current || dirty & /*itemInfo*/ 1) && t0_value !== (t0_value = /*itemInfo*/ ctx[0].name + "")) set_data_dev(t0, t0_value);
@@ -3237,6 +3149,7 @@ var app = (function () {
     		d: function destroy(detaching) {
     			if (detaching) detach_dev(div);
     			if (if_block) if_block.d();
+    			mounted = false;
     			dispose();
     		}
     	};
@@ -3405,9 +3318,6 @@ var app = (function () {
     		createToDoList,
     		appUpdate,
     		user,
-    		editName,
-    		editNameField,
-    		disbatch,
     		input_input_handler,
     		keydown_handler
     	];
@@ -3466,7 +3376,7 @@ var app = (function () {
     	}
     }
 
-    /* src/components/List.svelte generated by Svelte v3.22.2 */
+    /* src/components/List.svelte generated by Svelte v3.23.2 */
     const file$4 = "src/components/List.svelte";
 
     function get_each_context$2(ctx, list, i) {
@@ -3477,13 +3387,11 @@ var app = (function () {
 
     // (19:4) {#each items as item(item.id)}
     function create_each_block$2(key_1, ctx) {
-    	let div;
-    	let t;
-    	let rect;
-    	let stop_animation = noop;
+    	let first;
+    	let item;
     	let current;
 
-    	const item = new Item({
+    	item = new Item({
     			props: {
     				itemInfo: /*item*/ ctx[18],
     				styles: /*styles*/ ctx[1],
@@ -3501,16 +3409,13 @@ var app = (function () {
     		key: key_1,
     		first: null,
     		c: function create() {
-    			div = element("div");
+    			first = empty();
     			create_component(item.$$.fragment);
-    			t = space();
-    			add_location(div, file$4, 19, 6, 578);
-    			this.first = div;
+    			this.first = first;
     		},
     		m: function mount(target, anchor) {
-    			insert_dev(target, div, anchor);
-    			mount_component(item, div, null);
-    			append_dev(div, t);
+    			insert_dev(target, first, anchor);
+    			mount_component(item, target, anchor);
     			current = true;
     		},
     		p: function update(ctx, dirty) {
@@ -3519,17 +3424,6 @@ var app = (function () {
     			if (dirty & /*styles*/ 2) item_changes.styles = /*styles*/ ctx[1];
     			if (dirty & /*user*/ 4) item_changes.user = /*user*/ ctx[2];
     			item.$set(item_changes);
-    		},
-    		r: function measure() {
-    			rect = div.getBoundingClientRect();
-    		},
-    		f: function fix() {
-    			fix_position(div);
-    			stop_animation();
-    		},
-    		a: function animate() {
-    			stop_animation();
-    			stop_animation = create_animation(div, rect, flip, { duration: flipDurationMs });
     		},
     		i: function intro(local) {
     			if (current) return;
@@ -3541,8 +3435,8 @@ var app = (function () {
     			current = false;
     		},
     		d: function destroy(detaching) {
-    			if (detaching) detach_dev(div);
-    			destroy_component(item);
+    			if (detaching) detach_dev(first);
+    			destroy_component(item, detaching);
     		}
     	};
 
@@ -3560,6 +3454,7 @@ var app = (function () {
     function create_fragment$4(ctx) {
     	let div2;
     	let div0;
+    	let edith2field;
     	let t0;
     	let span0;
     	let t2;
@@ -3570,9 +3465,10 @@ var app = (function () {
     	let each_1_lookup = new Map();
     	let dndzone_action;
     	let current;
+    	let mounted;
     	let dispose;
 
-    	const edith2field = new EditH2Field({
+    	edith2field = new EditH2Field({
     			props: {
     				name: /*listInfo*/ ctx[0].name,
     				styles: /*styles*/ ctx[1]
@@ -3626,7 +3522,7 @@ var app = (function () {
     		l: function claim(nodes) {
     			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
     		},
-    		m: function mount(target, anchor, remount) {
+    		m: function mount(target, anchor) {
     			insert_dev(target, div2, anchor);
     			append_dev(div2, div0);
     			mount_component(edith2field, div0, null);
@@ -3642,15 +3538,18 @@ var app = (function () {
     			}
 
     			current = true;
-    			if (remount) run_all(dispose);
 
-    			dispose = [
-    				listen_dev(span0, "click", /*click_handler*/ ctx[16], false, false, false),
-    				listen_dev(span1, "click", /*click_handler_1*/ ctx[17], false, false, false),
-    				action_destroyer(dndzone_action = dndzone.call(null, div1, { items: /*items*/ ctx[3], flipDurationMs })),
-    				listen_dev(div1, "consider", /*handleSort*/ ctx[11], false, false, false),
-    				listen_dev(div1, "finalize", /*handleSort*/ ctx[11], false, false, false)
-    			];
+    			if (!mounted) {
+    				dispose = [
+    					listen_dev(span0, "click", /*click_handler*/ ctx[12], false, false, false),
+    					listen_dev(span1, "click", /*click_handler_1*/ ctx[13], false, false, false),
+    					action_destroyer(dndzone_action = dndzone.call(null, div1, { items: /*items*/ ctx[3] })),
+    					listen_dev(div1, "consider", /*handleSort*/ ctx[11], false, false, false),
+    					listen_dev(div1, "finalize", /*handleSort*/ ctx[11], false, false, false)
+    				];
+
+    				mounted = true;
+    			}
     		},
     		p: function update(ctx, [dirty]) {
     			const edith2field_changes = {};
@@ -3662,14 +3561,12 @@ var app = (function () {
     				const each_value = /*items*/ ctx[3];
     				validate_each_argument(each_value);
     				group_outros();
-    				for (let i = 0; i < each_blocks.length; i += 1) each_blocks[i].r();
     				validate_each_keys(ctx, each_value, get_each_context$2, get_key);
-    				each_blocks = update_keyed_each(each_blocks, dirty, get_key, 1, ctx, each_value, each_1_lookup, div1, fix_and_outro_and_destroy_block, create_each_block$2, null, get_each_context$2);
-    				for (let i = 0; i < each_blocks.length; i += 1) each_blocks[i].a();
+    				each_blocks = update_keyed_each(each_blocks, dirty, get_key, 1, ctx, each_value, each_1_lookup, div1, outro_and_destroy_block, create_each_block$2, null, get_each_context$2);
     				check_outros();
     			}
 
-    			if (dndzone_action && is_function(dndzone_action.update) && dirty & /*items*/ 8) dndzone_action.update.call(null, { items: /*items*/ ctx[3], flipDurationMs });
+    			if (dndzone_action && is_function(dndzone_action.update) && dirty & /*items*/ 8) dndzone_action.update.call(null, { items: /*items*/ ctx[3] });
 
     			if (!current || dirty & /*styles*/ 2) {
     				set_style(div2, "background-color", /*styles*/ ctx[1].listbgcolor);
@@ -3706,6 +3603,7 @@ var app = (function () {
     				each_blocks[i].d();
     			}
 
+    			mounted = false;
     			run_all(dispose);
     		}
     	};
@@ -3869,10 +3767,6 @@ var app = (function () {
     		newItemApp,
     		appUpdate,
     		handleSort,
-    		editNameFlag,
-    		editField,
-    		disbatch,
-    		editName,
     		click_handler,
     		click_handler_1
     	];
@@ -3927,7 +3821,7 @@ var app = (function () {
     	}
     }
 
-    /* src/components/ListContainer.svelte generated by Svelte v3.22.2 */
+    /* src/components/ListContainer.svelte generated by Svelte v3.23.2 */
     const file$5 = "src/components/ListContainer.svelte";
 
     function get_each_context$3(ctx, list, i) {
@@ -4034,9 +3928,10 @@ var app = (function () {
 
     // (3:4) {#each lists.lists as list }
     function create_each_block$3(ctx) {
+    	let list;
     	let current;
 
-    	const list = new List({
+    	list = new List({
     			props: {
     				listInfo: /*list*/ ctx[12],
     				styles: /*styles*/ ctx[1],
@@ -4099,6 +3994,7 @@ var app = (function () {
     	let div0;
     	let p;
     	let current;
+    	let mounted;
     	let dispose;
     	let if_block = typeof /*lists*/ ctx[0] === "object" && create_if_block$4(ctx);
 
@@ -4122,15 +4018,18 @@ var app = (function () {
     		l: function claim(nodes) {
     			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
     		},
-    		m: function mount(target, anchor, remount) {
+    		m: function mount(target, anchor) {
     			insert_dev(target, div1, anchor);
     			if (if_block) if_block.m(div1, null);
     			append_dev(div1, t0);
     			append_dev(div1, div0);
     			append_dev(div0, p);
     			current = true;
-    			if (remount) dispose();
-    			dispose = listen_dev(div0, "click", /*click_handler*/ ctx[11], false, false, false);
+
+    			if (!mounted) {
+    				dispose = listen_dev(div0, "click", /*click_handler*/ ctx[11], false, false, false);
+    				mounted = true;
+    			}
     		},
     		p: function update(ctx, [dirty]) {
     			if (typeof /*lists*/ ctx[0] === "object") {
@@ -4172,6 +4071,7 @@ var app = (function () {
     		d: function destroy(detaching) {
     			if (detaching) detach_dev(div1);
     			if (if_block) if_block.d();
+    			mounted = false;
     			dispose();
     		}
     	};
@@ -4328,7 +4228,7 @@ var app = (function () {
     	}
     }
 
-    /* src/components/Board.svelte generated by Svelte v3.22.2 */
+    /* src/components/Board.svelte generated by Svelte v3.23.2 */
     const file$6 = "src/components/Board.svelte";
 
     function get_each_context$4(ctx, list, i) {
@@ -4346,10 +4246,11 @@ var app = (function () {
     	let t_value = /*board*/ ctx[27].name + "";
     	let t;
     	let div_data_key_value;
+    	let mounted;
     	let dispose;
 
     	function click_handler(...args) {
-    		return /*click_handler*/ ctx[24](/*board*/ ctx[27], ...args);
+    		return /*click_handler*/ ctx[23](/*board*/ ctx[27], ...args);
     	}
 
     	const block = {
@@ -4367,12 +4268,15 @@ var app = (function () {
     			attr_dev(div, "data-key", div_data_key_value = /*index*/ ctx[29]);
     			add_location(div, file$6, 27, 8, 1003);
     		},
-    		m: function mount(target, anchor, remount) {
+    		m: function mount(target, anchor) {
     			insert_dev(target, div, anchor);
     			append_dev(div, span);
     			append_dev(span, t);
-    			if (remount) dispose();
-    			dispose = listen_dev(div, "click", click_handler, false, false, false);
+
+    			if (!mounted) {
+    				dispose = listen_dev(div, "click", click_handler, false, false, false);
+    				mounted = true;
+    			}
     		},
     		p: function update(new_ctx, dirty) {
     			ctx = new_ctx;
@@ -4396,6 +4300,7 @@ var app = (function () {
     		},
     		d: function destroy(detaching) {
     			if (detaching) detach_dev(div);
+    			mounted = false;
     			dispose();
     		}
     	};
@@ -4416,6 +4321,7 @@ var app = (function () {
     	let div;
     	let span;
     	let div_data_key_value;
+    	let mounted;
     	let dispose;
 
     	function select_block_type_1(ctx, dirty) {
@@ -4427,7 +4333,7 @@ var app = (function () {
     	let if_block = current_block_type(ctx);
 
     	function dblclick_handler(...args) {
-    		return /*dblclick_handler*/ ctx[23](/*board*/ ctx[27], ...args);
+    		return /*dblclick_handler*/ ctx[22](/*board*/ ctx[27], ...args);
     	}
 
     	const block = {
@@ -4445,12 +4351,15 @@ var app = (function () {
     			attr_dev(div, "data-key", div_data_key_value = /*index*/ ctx[29]);
     			add_location(div, file$6, 7, 8, 178);
     		},
-    		m: function mount(target, anchor, remount) {
+    		m: function mount(target, anchor) {
     			insert_dev(target, div, anchor);
     			append_dev(div, span);
     			if_block.m(span, null);
-    			if (remount) dispose();
-    			dispose = listen_dev(div, "dblclick", dblclick_handler, false, false, false);
+
+    			if (!mounted) {
+    				dispose = listen_dev(div, "dblclick", dblclick_handler, false, false, false);
+    				mounted = true;
+    			}
     		},
     		p: function update(new_ctx, dirty) {
     			ctx = new_ctx;
@@ -4486,6 +4395,7 @@ var app = (function () {
     		d: function destroy(detaching) {
     			if (detaching) detach_dev(div);
     			if_block.d();
+    			mounted = false;
     			dispose();
     		}
     	};
@@ -4535,10 +4445,11 @@ var app = (function () {
     // (15:16) {#if editNameFlag}
     function create_if_block_1$2(ctx) {
     	let input;
+    	let mounted;
     	let dispose;
 
     	function input_input_handler() {
-    		/*input_input_handler*/ ctx[19].call(input, /*board*/ ctx[27]);
+    		/*input_input_handler*/ ctx[18].call(input, /*each_value*/ ctx[28], /*index*/ ctx[29]);
     	}
 
     	const block = {
@@ -4548,17 +4459,20 @@ var app = (function () {
     			attr_dev(input, "class", "svelte-11cfegz");
     			add_location(input, file$6, 15, 18, 577);
     		},
-    		m: function mount(target, anchor, remount) {
+    		m: function mount(target, anchor) {
     			insert_dev(target, input, anchor);
     			set_input_value(input, /*board*/ ctx[27].name);
-    			/*input_binding*/ ctx[20](input);
-    			if (remount) run_all(dispose);
+    			/*input_binding*/ ctx[19](input);
 
-    			dispose = [
-    				listen_dev(input, "input", input_input_handler),
-    				listen_dev(input, "keydown", /*keydown_handler*/ ctx[21], false, false, false),
-    				listen_dev(input, "blur", /*blur_handler*/ ctx[22], false, false, false)
-    			];
+    			if (!mounted) {
+    				dispose = [
+    					listen_dev(input, "input", input_input_handler),
+    					listen_dev(input, "keydown", /*keydown_handler*/ ctx[20], false, false, false),
+    					listen_dev(input, "blur", /*blur_handler*/ ctx[21], false, false, false)
+    				];
+
+    				mounted = true;
+    			}
     		},
     		p: function update(new_ctx, dirty) {
     			ctx = new_ctx;
@@ -4569,7 +4483,8 @@ var app = (function () {
     		},
     		d: function destroy(detaching) {
     			if (detaching) detach_dev(input);
-    			/*input_binding*/ ctx[20](null);
+    			/*input_binding*/ ctx[19](null);
+    			mounted = false;
     			run_all(dispose);
     		}
     	};
@@ -4648,7 +4563,9 @@ var app = (function () {
     	let t3;
     	let div1_data_key_value;
     	let t4;
+    	let listcontainer;
     	let current;
+    	let mounted;
     	let dispose;
     	let each_value = /*boardInfo*/ ctx[0];
     	validate_each_argument(each_value);
@@ -4658,9 +4575,9 @@ var app = (function () {
     		each_blocks[i] = create_each_block$4(get_each_context$4(ctx, each_value, i));
     	}
 
-    	const listcontainer = new ListContainer({
+    	listcontainer = new ListContainer({
     			props: {
-    				lists: /*boardInfo*/ ctx[0].find(/*func*/ ctx[26]),
+    				lists: /*boardInfo*/ ctx[0].find(/*func*/ ctx[25]),
     				styles: /*styles*/ ctx[1],
     				user: /*user*/ ctx[3]
     			},
@@ -4717,7 +4634,7 @@ var app = (function () {
     		l: function claim(nodes) {
     			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
     		},
-    		m: function mount(target, anchor, remount) {
+    		m: function mount(target, anchor) {
     			insert_dev(target, div3, anchor);
     			append_dev(div3, div0);
     			append_dev(div0, t0);
@@ -4735,8 +4652,11 @@ var app = (function () {
     			append_dev(div3, t4);
     			mount_component(listcontainer, div3, null);
     			current = true;
-    			if (remount) dispose();
-    			dispose = listen_dev(div1, "click", /*click_handler_1*/ ctx[25], false, false, false);
+
+    			if (!mounted) {
+    				dispose = listen_dev(div1, "click", /*click_handler_1*/ ctx[24], false, false, false);
+    				mounted = true;
+    			}
     		},
     		p: function update(ctx, [dirty]) {
     			if (!current || dirty & /*update*/ 4) set_data_dev(t0, /*update*/ ctx[2]);
@@ -4782,7 +4702,7 @@ var app = (function () {
     			}
 
     			const listcontainer_changes = {};
-    			if (dirty & /*boardInfo, currentBoard*/ 17) listcontainer_changes.lists = /*boardInfo*/ ctx[0].find(/*func*/ ctx[26]);
+    			if (dirty & /*boardInfo, currentBoard*/ 17) listcontainer_changes.lists = /*boardInfo*/ ctx[0].find(/*func*/ ctx[25]);
     			if (dirty & /*styles*/ 2) listcontainer_changes.styles = /*styles*/ ctx[1];
     			if (dirty & /*user*/ 8) listcontainer_changes.user = /*user*/ ctx[3];
     			listcontainer.$set(listcontainer_changes);
@@ -4800,6 +4720,7 @@ var app = (function () {
     			if (detaching) detach_dev(div3);
     			destroy_each(each_blocks, detaching);
     			destroy_component(listcontainer);
+    			mounted = false;
     			dispose();
     		}
     	};
@@ -4903,14 +4824,15 @@ var app = (function () {
     	let { $$slots = {}, $$scope } = $$props;
     	validate_slots("Board", $$slots, []);
 
-    	function input_input_handler(board) {
-    		board.name = this.value;
+    	function input_input_handler(each_value, index) {
+    		each_value[index].name = this.value;
     		$$invalidate(0, boardInfo);
     	}
 
     	function input_binding($$value) {
     		binding_callbacks[$$value ? "unshift" : "push"](() => {
-    			$$invalidate(6, editField = $$value);
+    			editField = $$value;
+    			$$invalidate(6, editField);
     		});
     	}
 
@@ -5002,7 +4924,6 @@ var app = (function () {
     		newItemApp,
     		appUpdate,
     		listUpdate,
-    		dispatch,
     		input_input_handler,
     		input_binding,
     		keydown_handler,
@@ -5085,7 +5006,7 @@ var app = (function () {
     	}
     }
 
-    /* src/components/Login.svelte generated by Svelte v3.22.2 */
+    /* src/components/Login.svelte generated by Svelte v3.23.2 */
     const file$7 = "src/components/Login.svelte";
 
     // (21:2) {#if error !== null}
@@ -5140,6 +5061,7 @@ var app = (function () {
     	let div2;
     	let button;
     	let t9;
+    	let mounted;
     	let dispose;
     	let if_block = /*error*/ ctx[3] !== null && create_if_block$6(ctx);
 
@@ -5202,7 +5124,7 @@ var app = (function () {
     		l: function claim(nodes) {
     			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
     		},
-    		m: function mount(target, anchor, remount) {
+    		m: function mount(target, anchor) {
     			insert_dev(target, div3, anchor);
     			append_dev(div3, h2);
     			append_dev(div3, t1);
@@ -5210,26 +5132,29 @@ var app = (function () {
     			append_dev(div0, label0);
     			append_dev(div0, t3);
     			append_dev(div0, input0);
-    			/*input0_binding*/ ctx[6](input0);
+    			/*input0_binding*/ ctx[5](input0);
     			append_dev(div3, t4);
     			append_dev(div3, div1);
     			append_dev(div1, label1);
     			append_dev(div1, t6);
     			append_dev(div1, input1);
-    			/*input1_binding*/ ctx[8](input1);
+    			/*input1_binding*/ ctx[7](input1);
     			append_dev(div3, t7);
     			append_dev(div3, div2);
     			append_dev(div2, button);
     			append_dev(div3, t9);
     			if (if_block) if_block.m(div3, null);
-    			if (remount) run_all(dispose);
 
-    			dispose = [
-    				listen_dev(input0, "focus", /*focus_handler*/ ctx[7], false, false, false),
-    				listen_dev(input1, "keydown", /*keydown_handler*/ ctx[9], false, false, false),
-    				listen_dev(input1, "focus", /*focus_handler_1*/ ctx[10], false, false, false),
-    				listen_dev(button, "click", /*login*/ ctx[4], false, false, false)
-    			];
+    			if (!mounted) {
+    				dispose = [
+    					listen_dev(input0, "focus", /*focus_handler*/ ctx[6], false, false, false),
+    					listen_dev(input1, "keydown", /*keydown_handler*/ ctx[8], false, false, false),
+    					listen_dev(input1, "focus", /*focus_handler_1*/ ctx[9], false, false, false),
+    					listen_dev(button, "click", /*login*/ ctx[4], false, false, false)
+    				];
+
+    				mounted = true;
+    			}
     		},
     		p: function update(ctx, [dirty]) {
     			if (/*error*/ ctx[3] !== null) {
@@ -5261,9 +5186,10 @@ var app = (function () {
     		o: noop,
     		d: function destroy(detaching) {
     			if (detaching) detach_dev(div3);
-    			/*input0_binding*/ ctx[6](null);
-    			/*input1_binding*/ ctx[8](null);
+    			/*input0_binding*/ ctx[5](null);
+    			/*input1_binding*/ ctx[7](null);
     			if (if_block) if_block.d();
+    			mounted = false;
     			run_all(dispose);
     		}
     	};
@@ -5307,7 +5233,8 @@ var app = (function () {
 
     	function input0_binding($$value) {
     		binding_callbacks[$$value ? "unshift" : "push"](() => {
-    			$$invalidate(1, name = $$value);
+    			name = $$value;
+    			$$invalidate(1, name);
     		});
     	}
 
@@ -5317,7 +5244,8 @@ var app = (function () {
 
     	function input1_binding($$value) {
     		binding_callbacks[$$value ? "unshift" : "push"](() => {
-    			$$invalidate(2, passwd = $$value);
+    			passwd = $$value;
+    			$$invalidate(2, passwd);
     		});
     	}
 
@@ -5360,7 +5288,6 @@ var app = (function () {
     		passwd,
     		error,
     		login,
-    		dispatch,
     		input0_binding,
     		focus_handler,
     		input1_binding,
@@ -5398,7 +5325,7 @@ var app = (function () {
     	}
     }
 
-    /* src/components/UserList.svelte generated by Svelte v3.22.2 */
+    /* src/components/UserList.svelte generated by Svelte v3.23.2 */
 
     const file$8 = "src/components/UserList.svelte";
 
@@ -5507,16 +5434,17 @@ var app = (function () {
     	}
     }
 
-    /* src/SvelteKanban.svelte generated by Svelte v3.22.2 */
+    /* src/SvelteKanban.svelte generated by Svelte v3.23.2 */
     const file$9 = "src/SvelteKanban.svelte";
 
     // (28:2) {:else}
     function create_else_block_1$1(ctx) {
     	let h1;
     	let t1;
+    	let login_1;
     	let current;
 
-    	const login_1 = new Login({
+    	login_1 = new Login({
     			props: { styles: /*defaultStyles*/ ctx[5] },
     			$$inline: true
     		});
@@ -5656,9 +5584,10 @@ var app = (function () {
 
     // (12:4) {:else}
     function create_else_block$3(ctx) {
+    	let board;
     	let current;
 
-    	const board = new Board({
+    	board = new Board({
     			props: {
     				boardInfo: /*Kanban*/ ctx[0].boards,
     				styles: /*styles*/ ctx[1],
@@ -5721,9 +5650,10 @@ var app = (function () {
 
     // (9:4) {#if showUserList}
     function create_if_block_1$3(ctx) {
+    	let userlist;
     	let current;
 
-    	const userlist = new UserList({
+    	userlist = new UserList({
     			props: { styles: /*defaultStyles*/ ctx[5] },
     			$$inline: true
     		});
